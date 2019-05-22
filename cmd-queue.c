@@ -25,6 +25,9 @@
 
 #include "tmux.h"
 
+/* Next group number. */
+static u_int cmdq_next_group;
+
 /* Global command queue. */
 static struct cmdq_list global_queue = TAILQ_HEAD_INITIALIZER(global_queue);
 
@@ -175,15 +178,6 @@ cmdq_remove(struct cmdq_item *item)
 	free(item);
 }
 
-/* Set command group. */
-static u_int
-cmdq_next_group(void)
-{
-	static u_int	group;
-
-	return (++group);
-}
-
 /* Remove all subsequent items that match this item's group. */
 static void
 cmdq_remove_group(struct cmdq_item *item)
@@ -205,8 +199,8 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmd_find_state *current,
     struct mouse_event *m, int flags)
 {
 	struct cmdq_item	*item, *first = NULL, *last = NULL;
-	struct cmd		*cmd;
-	u_int			 group = cmdq_next_group();
+	struct cmd		*cmd, *previous = NULL;
+	u_int			 group;
 	struct cmdq_shared	*shared;
 
 	shared = xcalloc(1, sizeof *shared);
@@ -218,6 +212,10 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmd_find_state *current,
 		memcpy(&shared->mouse, m, sizeof shared->mouse);
 
 	TAILQ_FOREACH(cmd, &cmdlist->list, qentry) {
+		if (previous == NULL || cmd->group != previous->group)
+			group = cmdq_next_group++;
+		previous = cmd;
+
 		item = xcalloc(1, sizeof *item);
 		xasprintf(&item->name, "[%s/%p]", cmd->entry->name, item);
 		item->type = CMDQ_COMMAND;
@@ -228,6 +226,8 @@ cmdq_get_command(struct cmd_list *cmdlist, struct cmd_find_state *current,
 		item->shared = shared;
 		item->cmdlist = cmdlist;
 		item->cmd = cmd;
+
+		log_debug("%s: %s group %u", __func__, item->name, item->group);
 
 		shared->references++;
 		cmdlist->references++;
