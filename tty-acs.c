@@ -19,6 +19,7 @@
 #include <sys/types.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "tmux.h"
 
@@ -62,11 +63,48 @@ static const struct tty_acs_entry tty_acs_table[] = {
 	{ 'x', "\342\224\202" },	/* vertical line */
 	{ 'y', "\342\211\244" },	/* less-than-or-equal-to */
 	{ 'z', "\342\211\245" },	/* greater-than-or-equal-to */
-	{ '{', "\317\200" },   		/* greek pi */
+	{ '{', "\317\200" },		/* greek pi */
 	{ '|', "\342\211\240" },	/* not-equal */
 	{ '}', "\302\243" },		/* UK pound sign */
 	{ '~', "\302\267" }		/* bullet */
 };
+
+#ifndef NO_USE_UTF8CJK
+static char tty_acs_ascii_table[UCHAR_MAX][2] = {
+	['}'] = "f",	/* UK pound sign		ACS_STERLING	*/
+	['.'] = "v",	/* arrow pointing down		ACS_DARROW	*/
+	[','] = "<",	/* arrow pointing left		ACS_LARROW	*/
+	['+'] = ">",	/* arrow pointing right		ACS_RARROW	*/
+	['-'] = "^",	/* arrow pointing up		ACS_UARROW	*/
+	['h'] = "#",	/* board of squares		ACS_BOARD	*/
+	['~'] = "o",	/* bullet			ACS_BULLET	*/
+	['a'] = ":",	/* checker board (stipple)	ACS_CKBOARD	*/
+	['f'] = "\\",	/* degree symbol		ACS_DEGREE	*/
+	['`'] = "+",	/* diamond			ACS_DIAMOND	*/
+	['z'] = ">",	/* greater-than-or-equal-to	ACS_GEQUAL	*/
+	['{'] = "*",	/* greek pi			ACS_PI		*/
+	['q'] = "-",	/* horizontal line		ACS_HLINE	*/
+	['i'] = "#",	/* lantern symbol		ACS_LANTERN	*/
+	['n'] = "+",	/* large plus or crossover	ACS_PLUS	*/
+	['y'] = "<",	/* less-than-or-equal-to	ACS_LEQUAL	*/
+	['m'] = "+",	/* lower left corner		ACS_LLCORNER	*/
+	['j'] = "+",	/* lower right corner		ACS_LRCORNER	*/
+	['|'] = "!",	/* not-equal			ACS_NEQUAL	*/
+	['g'] = "#",	/* plus/minus			ACS_PLMINUS	*/
+	['o'] = "~",	/* scan line 1			ACS_S1		*/
+	['p'] = "-",	/* scan line 3			ACS_S3		*/
+	['r'] = "-",	/* scan line 7			ACS_S7		*/
+	['s'] = "_",	/* scan line 9			ACS_S9		*/
+	['0'] = "#",	/* solid square block		ACS_BLOCK	*/
+	['w'] = "+",	/* tee pointing down		ACS_TTEE	*/
+	['u'] = "+",	/* tee pointing left		ACS_RTEE	*/
+	['t'] = "+",	/* tee pointing right		ACS_LTEE	*/
+	['v'] = "+",	/* tee pointing up		ACS_BTEE	*/
+	['l'] = "+",	/* upper left corner		ACS_ULCORNER	*/
+	['k'] = "+",	/* upper right corner		ACS_URCORNER	*/
+	['x'] = "|",	/* vertical line		ACS_VLINE	*/
+};
+#endif /* NO_USE_UTF8CJK */
 
 static int
 tty_acs_cmp(const void *key, const void *value)
@@ -78,10 +116,96 @@ tty_acs_cmp(const void *key, const void *value)
 	return (ch - entry->key);
 }
 
+#ifndef NO_USE_UTF8CJK
+static int
+get_utf8_width(const char *s)
+{
+	const char		*p = s;
+	struct utf8_data	 ud;
+	enum utf8_state		 more;
+
+	for (more = utf8_open(&ud, *p++); more == UTF8_MORE; more = utf8_append(&ud, *p++))
+		;
+	if (more != UTF8_DONE)
+		fatalx("INTERNAL ERROR: In get_utf8_width, utf8_open or utf8_append return error %d", more);
+	log_debug("%s width is %d", s, ud.width);
+	return ud.width;
+}
+
+enum acs_type {
+	ACST_UTF8,
+	ACST_ACS,
+	ACST_ASCII,
+};
+
+static enum acs_type
+tty_acs_type(struct tty *tty)
+{
+	if (tty == NULL)
+		return (ACST_ASCII);
+
+	/*
+	 * If the U8 flag is present, it marks whether a terminal supports
+	 * UTF-8 and ACS together.
+	 *
+	 * If it is present and zero, we force ACS - this gives users a way to
+	 * turn off UTF-8 line drawing.
+	 *
+	 * If it is nonzero, we can fall through to the default and use UTF-8
+	 * line drawing on UTF-8 terminals.
+	 */
+
+	struct environ_entry	*envent;
+	envent = environ_find(tty->client->environ, "TMUX_ACS");
+	int request_utf8 = 1;
+	int request_acs = 1;
+	if (envent != NULL) {
+#if 1
+		if (strcasestr(envent->value, "utf-8") != NULL ||
+		    strcasestr(envent->value, "utf8") != NULL)
+			return (ACST_UTF8);
+		else if (strcasestr(envent->value, "acs") != NULL)
+			return (ACST_ACS);
+		else
+			return (ACST_ASCII);
+#else
+		request_utf8 = request_acs = 0;
+		if (strcasestr(envent->value, "utf-8") != NULL ||
+		    strcasestr(envent->value, "utf8") != NULL)
+			request_utf8 = 1;
+		if (strcasestr(envent->value, "acs") != NULL)
+			request_acs = 1;
+#endif
+	}
+
+	if (request_utf8 &&
+	    (tty->flags & TTY_UTF8) &&
+	    (!tty_term_has(tty->term, TTYC_U8) ||
+	     tty_term_number(tty->term, TTYC_U8) != 0)) {
+		static int hline_width = 0;
+		const char *hline = "\342\224\200";
+		if (hline_width == 0) {
+			hline_width = get_utf8_width(hline);
+			log_debug("hline_width=%d", hline_width);
+		}
+		if (hline_width == 1)
+			return (ACST_UTF8);
+	}
+
+	if (request_acs && tty_term_has(tty->term, TTYC_ACSC))
+		return (ACST_ACS);
+
+	return (ACST_ASCII);
+}
+#endif /* NO_USE_UTF8CJK */
+
 /* Should this terminal use ACS instead of UTF-8 line drawing? */
 int
 tty_acs_needed(struct tty *tty)
 {
+#ifndef NO_USE_UTF8CJK
+	return (tty_acs_type(tty) == ACST_ACS);
+#else
 	if (tty == NULL)
 		return (0);
 
@@ -102,6 +226,7 @@ tty_acs_needed(struct tty *tty)
 	if (tty->flags & TTY_UTF8)
 		return (0);
 	return (1);
+#endif /* NO_USE_UTF8CJK */
 }
 
 /* Retrieve ACS to output as a string. */
@@ -110,6 +235,26 @@ tty_acs_get(struct tty *tty, u_char ch)
 {
 	struct tty_acs_entry	*entry;
 
+#ifndef NO_USE_UTF8CJK
+	switch (tty_acs_type(tty)) {
+	case ACST_UTF8:
+		entry = bsearch(&ch, tty_acs_table, nitems(tty_acs_table),
+		    sizeof tty_acs_table[0], tty_acs_cmp);
+		if (entry != NULL)
+			return (entry->string);
+		break;
+	case ACST_ACS:
+		if (tty->term->acs[ch][0] != '\0')
+			return (&tty->term->acs[ch][0]);
+		break;
+	case ACST_ASCII:
+		break;
+	}
+
+	if (tty_acs_ascii_table[ch][0] != '\0')
+		return (&tty_acs_ascii_table[ch][0]);
+	return (NULL);
+#else
 	/* Use the ACS set instead of UTF-8 if needed. */
 	if (tty_acs_needed(tty)) {
 		if (tty->term->acs[ch][0] == '\0')
@@ -123,4 +268,5 @@ tty_acs_get(struct tty *tty, u_char ch)
 	if (entry == NULL)
 		return (NULL);
 	return (entry->string);
+#endif /* NO_USE_UTF8CJK */
 }

@@ -246,6 +246,14 @@ const struct options_table_entry options_table[] = {
 	  .default_num = ALERT_OTHER
 	},
 
+#ifndef NO_USE_UTF8CJK
+	{ .name = "utf8-cjk",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1
+	},
+#endif
+
 	{ .name = "assume-paste-time",
 	  .type = OPTIONS_TABLE_NUMBER,
 	  .scope = OPTIONS_TABLE_SESSION,
